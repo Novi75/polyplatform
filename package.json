@@ -1,0 +1,14 @@
+{
+  "name": "polyplatform",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @polyplatform/backend run dev & pnpm --filter @polyplatform/frontend run dev",
+    "dev:backend": "pnpm --filter @polyplatform/backend run dev",
+    "dev:frontend": "pnpm --filter @polyplatform/frontend run dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

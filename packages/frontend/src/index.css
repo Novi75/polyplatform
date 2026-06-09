@@ -1,0 +1,214 @@
+@import "tailwindcss";
+
+/* ─── Terminal Trading Theme ─────────────────────────────────────────── */
+:root {
+  --ng:   #00ff88;   /* neon green  */
+  --nc:   #00d4ff;   /* neon cyan   */
+  --nr:   #ff3366;   /* neon red    */
+  --no:   #ff9900;   /* neon orange */
+  --ny:   #ffe600;   /* neon yellow */
+  --np:   #bf5fff;   /* neon purple */
+  --nb:   #0099ff;   /* neon blue   */
+  --bg0:  #040710;   /* deepest bg  */
+  --bg1:  #070b18;   /* panel bg    */
+  --bg2:  #0a1020;   /* raised bg   */
+  --bd:   #0f1c38;   /* border      */
+  --bd2:  #162444;   /* border-2    */
+  --txt:  #c8d8f0;   /* body text   */
+  --dim:  #3a4f6e;   /* dim text    */
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background-color: var(--bg0);
+  color: var(--txt);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg0); }
+::-webkit-scrollbar-thumb { background: var(--bd2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,212,255,0.35); }
+
+/* ─── Neon text ─────────────────────────────────────────────────────── */
+.neon-g { color: var(--ng); text-shadow: 0 0 8px rgba(0,255,136,0.7); }
+.neon-c { color: var(--nc); text-shadow: 0 0 8px rgba(0,212,255,0.7); }
+.neon-r { color: var(--nr); text-shadow: 0 0 8px rgba(255,51,102,0.7); }
+.neon-o { color: var(--no); text-shadow: 0 0 8px rgba(255,153,0,0.7);  }
+.neon-y { color: var(--ny); text-shadow: 0 0 8px rgba(255,230,0,0.7);  }
+.neon-p { color: var(--np); text-shadow: 0 0 8px rgba(191,95,255,0.7); }
+.neon-b { color: var(--nb); text-shadow: 0 0 8px rgba(0,153,255,0.7);  }
+.dim    { color: var(--dim); }
+
+/* ─── Widget cards ──────────────────────────────────────────────────── */
+.widget {
+  background: linear-gradient(160deg, var(--bg1) 0%, var(--bg0) 100%);
+  border: 1px solid var(--bd);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+.widget::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--ng) 50%, transparent 100%);
+  opacity: 0.7;
+}
+.widget.cyan::before  { background: linear-gradient(90deg, transparent, var(--nc), transparent); }
+.widget.red::before   { background: linear-gradient(90deg, transparent, var(--nr), transparent); }
+.widget.orange::before{ background: linear-gradient(90deg, transparent, var(--no), transparent); }
+.widget.purple::before{ background: linear-gradient(90deg, transparent, var(--np), transparent); }
+.widget.blue::before  { background: linear-gradient(90deg, transparent, var(--nb), transparent); }
+.widget.yellow::before{ background: linear-gradient(90deg, transparent, var(--ny), transparent); }
+.widget.dim::before   { background: linear-gradient(90deg, transparent, var(--bd2), transparent); }
+
+/* Widget header label */
+.wlabel {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+/* ─── Stat bars ─────────────────────────────────────────────────────── */
+.sbar { height: 3px; background: var(--bd); border-radius: 2px; overflow: hidden; flex: 1; }
+.sbar-fill { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
+.sbar-g { background: linear-gradient(90deg,#00ff88,#00cc6a); box-shadow: 0 0 5px rgba(0,255,136,0.6); }
+.sbar-r { background: linear-gradient(90deg,#ff3366,#cc2952); box-shadow: 0 0 5px rgba(255,51,102,0.6); }
+.sbar-c { background: linear-gradient(90deg,#00d4ff,#0099cc); box-shadow: 0 0 5px rgba(0,212,255,0.6); }
+.sbar-o { background: linear-gradient(90deg,#ff9900,#cc7a00); box-shadow: 0 0 5px rgba(255,153,0,0.6); }
+.sbar-y { background: linear-gradient(90deg,#ffe600,#ccb800); box-shadow: 0 0 5px rgba(255,230,0,0.6); }
+.sbar-p { background: linear-gradient(90deg,#bf5fff,#9933cc); box-shadow: 0 0 5px rgba(191,95,255,0.6); }
+
+/* ─── Neon buttons ──────────────────────────────────────────────────── */
+.btn-ng {
+  background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.35);
+  color: var(--ng); text-shadow: 0 0 6px rgba(0,255,136,0.5);
+  box-shadow: 0 0 8px rgba(0,255,136,0.08); transition: all 0.15s;
+}
+.btn-ng:hover { background: rgba(0,255,136,0.16); box-shadow: 0 0 14px rgba(0,255,136,0.18); }
+.btn-nc {
+  background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.35);
+  color: var(--nc); text-shadow: 0 0 6px rgba(0,212,255,0.5);
+  transition: all 0.15s;
+}
+.btn-nc:hover { background: rgba(0,212,255,0.16); }
+.btn-nr {
+  background: rgba(255,51,102,0.08); border: 1px solid rgba(255,51,102,0.35);
+  color: var(--nr); text-shadow: 0 0 6px rgba(255,51,102,0.5);
+  transition: all 0.15s;
+}
+.btn-nr:hover { background: rgba(255,51,102,0.16); }
+.btn-no {
+  background: rgba(255,153,0,0.08); border: 1px solid rgba(255,153,0,0.35);
+  color: var(--no); text-shadow: 0 0 6px rgba(255,153,0,0.5);
+  transition: all 0.15s;
+}
+.btn-dim {
+  background: rgba(15,28,56,0.8); border: 1px solid var(--bd2);
+  color: var(--dim); transition: all 0.15s;
+}
+.btn-dim:hover { border-color: var(--nc); color: var(--nc); }
+
+/* ─── Ticker bar ────────────────────────────────────────────────────── */
+.ticker-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 14px; border-right: 1px solid var(--bd);
+  font-size: 10px; letter-spacing: 0.06em; white-space: nowrap;
+}
+.ticker-item:last-child { border-right: none; }
+.ticker-label { color: var(--dim); text-transform: uppercase; font-size: 9px; letter-spacing: 0.1em; }
+
+/* ─── Panel header ──────────────────────────────────────────────────── */
+.ph {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--bd);
+  background: rgba(4,7,16,0.7);
+  flex-shrink: 0;
+}
+
+/* ─── Input terminal style ──────────────────────────────────────────── */
+input[type=number], input[type=text] {
+  background: var(--bg0);
+  border: 1px solid var(--bd2);
+  color: var(--nc);
+  font-family: inherit;
+  border-radius: 2px;
+  outline: none;
+  caret-color: var(--ng);
+}
+input[type=number]:focus, input[type=text]:focus {
+  border-color: rgba(0,212,255,0.5);
+  box-shadow: 0 0 6px rgba(0,212,255,0.15);
+}
+input[type=checkbox] { accent-color: var(--ng); }
+
+/* ─── Scan-line overlay ─────────────────────────────────────────────── */
+@keyframes scan {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(100vh); }
+}
+.scanline {
+  position: fixed; top: 0; left: 0; right: 0; height: 120px;
+  background: linear-gradient(transparent, rgba(0,255,136,0.018), transparent);
+  animation: scan 10s linear infinite;
+  pointer-events: none; z-index: 9998;
+}
+
+/* ─── Neon pulse ────────────────────────────────────────────────────── */
+@keyframes npulse {
+  0%,100% { opacity:1; }
+  50%      { opacity:0.5; }
+}
+.npulse { animation: npulse 2s ease-in-out infinite; }
+
+/* ─── Medal rank badges ─────────────────────────────────────────────── */
+.rank-1 { background:rgba(255,214,0,0.15); border:1px solid rgba(255,214,0,0.5); color:#ffd700; text-shadow:0 0 6px rgba(255,214,0,0.6); }
+.rank-2 { background:rgba(192,192,192,0.12); border:1px solid rgba(192,192,192,0.4); color:#c0c0c0; }
+.rank-3 { background:rgba(205,127,50,0.15); border:1px solid rgba(205,127,50,0.5); color:#cd7f32; text-shadow:0 0 6px rgba(205,127,50,0.5); }
+.rank-n { background:rgba(15,28,56,0.8); border:1px solid var(--bd2); color:var(--dim); }
+
+/* ─── Trader card ───────────────────────────────────────────────────── */
+.trader-card {
+  background: linear-gradient(135deg, #07091a 0%, #050810 100%);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  overflow: hidden;
+}
+.trader-card:hover { border-color: rgba(0,212,255,0.3); box-shadow: 0 0 12px rgba(0,212,255,0.06); }
+.trader-card.expanded { border-color: rgba(0,212,255,0.5); box-shadow: 0 0 16px rgba(0,212,255,0.1); }
+.trader-card.followed { border-color: rgba(0,255,136,0.4); box-shadow: 0 0 10px rgba(0,255,136,0.07); }
+
+/* ─── Signal items ──────────────────────────────────────────────────── */
+.sig-executed { background:rgba(0,255,136,0.05); border:1px solid rgba(0,255,136,0.2); }
+.sig-failed   { background:rgba(255,51,102,0.05); border:1px solid rgba(255,51,102,0.2); }
+.sig-detected { background:rgba(255,230,0,0.04); border:1px solid rgba(255,230,0,0.18); }
+.sig-skipped  { background:rgba(15,28,56,0.5); border:1px solid var(--bd); }
+
+/* ─── Log terminal ──────────────────────────────────────────────────── */
+.log-line       { font-size: 11px; line-height: 1.6; display: flex; gap: 8px; }
+.log-ts         { color: var(--dim); flex-shrink: 0; font-size: 10px; }
+.log-tag        { color: rgba(0,212,255,0.6); flex-shrink: 0; width: 72px; overflow: hidden; text-overflow: ellipsis; }
+.log-msg        { color: #8aa8cc; }
+.log-warn .log-msg  { color: var(--no); }
+.log-error .log-msg { color: var(--nr); }
+
+/* ─── Table ─────────────────────────────────────────────────────────── */
+.arb-table th {
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--dim); background: var(--bg0);
+  padding: 6px 12px; border-bottom: 1px solid var(--bd); white-space: nowrap;
+}
+.arb-table td { padding: 7px 12px; border-bottom: 1px solid rgba(15,28,56,0.8); font-size: 11px; }
+.arb-table tr:hover td { background: rgba(0,212,255,0.03); }
+.arb-row-hot td { background: rgba(0,255,136,0.04) !important; }
+.arb-row-sig td { background: rgba(191,95,255,0.04) !important; }
+.arb-row-dim { opacity: 0.5; }

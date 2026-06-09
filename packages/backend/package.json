@@ -1,0 +1,36 @@
+{
+  "name": "@polyplatform/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/websocket": "^8.3.1",
+    "@limitless-exchange/sdk": "^1.0.9",
+    "@polymarket/client": "0.0.0-canary-20260520141050",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.2",
+    "fastify": "^4.28.1",
+    "fuse.js": "^7.0.0",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2",
+    "viem": "^2.21.6",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "@types/ws": "^8.5.12",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
+}

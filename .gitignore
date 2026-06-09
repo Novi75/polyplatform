@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+packages/backend/dist/
+packages/frontend/dist/
+packages/frontend/.vite/
+hermes-desktop/dist/
+hermes-desktop/out/
+
+# Data & secrets — NEVER commit credentials or stored keys
+data/
+packages/data/
+*.store.json
+store.json
+.env
+.env.*
+*.env.local
+
+# Logs
+*.log
+*.err
+
+# Test/scratch files
+test_*.mjs
+verify_*.mjs
+verify_*.cjs
+ws-test*.mjs
+ref-test.mjs
+ws-test-output.txt
+
+# Screenshots
+*.png
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certs (generated locally)
+cert.pem
+key.pem
+
+# Separate sub-projects (have their own git repos)
+hermes-agent/
+hermes-desktop/
+
+# pnpm
+.pnpm-debug.log
+
+# Claude Code local settings (IDE-specific, not project config)
+.claude/
+
+# Debug / scratch JSON dumps
+limpage*.json
+packages/backend/limpage*.json
