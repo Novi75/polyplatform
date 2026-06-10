@@ -35,6 +35,8 @@ interface OpenPosition {
   xtfLongOutcome?: string | null
   spreadYesPlatform?: 'poly' | 'lim' | null
   spreadNoPlatform?: 'poly' | 'lim' | null
+  hedgeStatus?: 'pending' | 'closed' | 'expired' | 'failed' | null
+  hedgeError?: string | null
 }
 
 interface SpreadOpportunity {
@@ -1592,6 +1594,16 @@ export default function Dashboard() {
                               {pos.type==='spread' ? 'SPR' : pos.type==='xtf' ? 'XTF' : pos.type==='xasset' ? 'XA' : pos.type==='buzzer' ? pos.direction+' BUZZ' : pos.direction+' '+(pos.type==='signal'?'SIG':'ARB')}
                             </span>
                           </div>
+                          {pos.hedgeStatus && pos.hedgeStatus !== 'closed' && (
+                            <div className="mb-1.5 px-1.5 py-1 text-[10px] font-bold" style={{background:'rgba(255,51,102,0.12)',border:'1px solid rgba(255,51,102,0.35)',color:'var(--nr)',borderRadius:2}} title={pos.hedgeError ?? undefined}>
+                              ⚠ ORPHAN LEG — {pos.hedgeStatus === 'pending' ? 'closing real leg…' : pos.hedgeStatus === 'expired' ? 'left to expire' : 'auto-close failed'}
+                            </div>
+                          )}
+                          {pos.hedgeStatus === 'closed' && (
+                            <div className="mb-1.5 px-1.5 py-1 text-[10px] font-bold" style={{background:'rgba(255,153,0,0.1)',border:'1px solid rgba(255,153,0,0.3)',color:'var(--no)',borderRadius:2}} title={pos.hedgeError ?? undefined}>
+                              ⚠ orphan leg auto-closed
+                            </div>
+                          )}
                           <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[11px]">
                             <span style={{color:'var(--dim)'}}>Size</span>
                             <span className="text-right" style={{color:'var(--txt)'}}>${pos.positionSize.toFixed(2)}</span>

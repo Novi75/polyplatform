@@ -683,6 +683,47 @@ export async function redeemLimPositions(): Promise<void> {
   }
 }
 
+// Returns the actual on-chain CTF balance (in shares) for a market slug + outcome, or
+// null if it can't be determined (no creds/wallet, market unknown, RPC error). Used by
+// the spread-leg watchdog to confirm a leg actually filled — null means "unknown",
+// not "zero", so callers should not treat it as an empty position.
+export async function getLimPositionShares(slug: string, outcome: 'yes' | 'no'): Promise<number | null> {
+  try {
+    const creds = await getLimCreds()
+    if (!creds?.walletAddress && !creds?.privateKey) return null
+
+    let address = creds.walletAddress
+    if (!address) address = await discoverLimWalletAddress(creds) ?? undefined
+    if (!address) return null
+
+    let market: LimMarketInfo | undefined
+    for (const m of _markets.values()) { if (m.slug === slug) { market = m; break } }
+    if (!market) market = _expiredMarkets.get(slug)
+    if (!market) return null
+
+    const tokenId = outcome === 'yes' ? market.yesTokenId : market.noTokenId
+    if (!tokenId) return null
+
+    const { createPublicClient, http, parseAbi, getAddress, fallback } = await import('viem')
+    const { base } = await import('viem/chains')
+    const BASE_RPCS = [config.limitless.baseRpc, 'https://base.llamarpc.com', 'https://base.drpc.org']
+    const transport = fallback(BASE_RPCS.map(url => http(url)))
+    const publicClient = createPublicClient({ chain: base, transport })
+
+    const balance = await publicClient.readContract({
+      address: getAddress(CTF_ADDRESS) as `0x${string}`,
+      abi: parseAbi(['function balanceOf(address account, uint256 id) view returns (uint256)']),
+      functionName: 'balanceOf',
+      args: [getAddress(address) as `0x${string}`, BigInt(tokenId)],
+    })
+
+    return Number(balance) / 1_000_000
+  } catch (err) {
+    log('warn', 'Lim', `getLimPositionShares error (${slug}/${outcome}): ${(err as Error).message}`)
+    return null
+  }
+}
+
 // outcome: 'yes' = buy YES token (DOWN arb), 'no' = buy NO token (UP arb)
 export async function placeLimOrder(slug: string, outcome: 'yes' | 'no', usdcAmount: number): Promise<unknown> {
   await waitSlot()

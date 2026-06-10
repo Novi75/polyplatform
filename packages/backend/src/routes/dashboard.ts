@@ -138,6 +138,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
         xtfLongOutcome: t.xtfLongOutcome ?? null,
         spreadYesPlatform: t.spreadYesPlatform ?? null,
         spreadNoPlatform: t.spreadNoPlatform ?? null,
+        hedgeStatus: t.hedgeStatus ?? null,
+        hedgeError: t.hedgeError ?? null,
       }
     })
 

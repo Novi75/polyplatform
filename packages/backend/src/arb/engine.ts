@@ -18,6 +18,7 @@ import {
 import {
   fetchLimMarkets, startLimWs, stopLimWs, getLimMarkets, getLimAssetPrice,
   getLimBalance, placeLimOrder, closeLimPosition, getLimMarketExpiry, redeemLimPositions,
+  getLimPositionShares,
   type LimLivePrice,
 } from '../exchanges/lim.js'
 import { getPolyMarketExpiry } from '../exchanges/poly.js'
@@ -210,6 +211,9 @@ export interface TradeRecord {
   limResult?: unknown
   hedgeStatus?: 'pending' | 'closed' | 'expired' | 'failed'
   hedgeError?: string
+  // Spread orphan-leg watchdog — true once both legs have been confirmed against
+  // live exchange/on-chain positions (or the orphan has been queued for hedging)
+  legsVerified?: boolean
 }
 
 interface PendingHedge {
@@ -227,6 +231,9 @@ interface PendingHedge {
   expiresAt: number
   retries: number
   firstAttemptTs: number
+  // When set, sell exactly this many shares (a verified on-chain/API balance) instead
+  // of estimating from positionSize/entry prices — used by the spread orphan watchdog.
+  directShares?: number
 }
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -1534,11 +1541,20 @@ function limSharesForSell(positionSize: number, polyEntryPrice: number, limEntry
 async function closeOpenLeg(hedge: PendingHedge): Promise<boolean> {
   try {
     if (hedge.openLeg === 'poly') {
-      const shares = polySharesForSell(hedge.positionSize, hedge.polyEntryPrice, hedge.limEntryPrice, hedge.polySharesHeld)
+      const shares = hedge.directShares != null
+        ? hedge.directShares * 0.98
+        : polySharesForSell(hedge.positionSize, hedge.polyEntryPrice, hedge.limEntryPrice, hedge.polySharesHeld)
       await placePolyOrder(hedge.polyTokenId, 'SELL', shares)
-      log('info', 'ArbEngine', `hedge: sold ${shares.toFixed(4)} poly shares (${hedge.asset} ${hedge.limOutcome === 'no' ? 'YES' : 'NO'})`)
+      // For directShares (spread orphan), limOutcome IS the poly leg's own outcome.
+      // For arb hedges, limOutcome is the (failed) lim attempt — poly holds the opposite.
+      const polyOutcomeLabel = hedge.directShares != null
+        ? hedge.limOutcome.toUpperCase()
+        : (hedge.limOutcome === 'no' ? 'YES' : 'NO')
+      log('info', 'ArbEngine', `hedge: sold ${shares.toFixed(4)} poly shares (${hedge.asset} ${polyOutcomeLabel})`)
     } else {
-      const shares = limSharesForSell(hedge.positionSize, hedge.polyEntryPrice, hedge.limEntryPrice, hedge.limSharesHeld)
+      const shares = hedge.directShares != null
+        ? hedge.directShares * (1 - LIM_FEE) * 0.98
+        : limSharesForSell(hedge.positionSize, hedge.polyEntryPrice, hedge.limEntryPrice, hedge.limSharesHeld)
       await closeLimPosition(hedge.limSlug, hedge.limOutcome, shares)
       log('info', 'ArbEngine', `hedge: sold ${shares.toFixed(4)} lim ${hedge.limOutcome} shares (${hedge.asset})`)
     }
@@ -1577,6 +1593,144 @@ async function runHedgeWatchdog(): Promise<void> {
     }
   }
   if (_pendingHedges.length > 0) broadcastState()
+}
+
+// ── Spread orphan-leg watchdog ──────────────────────────────────────────────────
+//
+// Cross-platform spread trades place the Poly leg first, then the Lim leg — but
+// Limitless FOK orders don't reliably confirm a fill (placeLimOrder can return a
+// non-throwing response even when nothing actually filled). When that happens,
+// `record.success = true` is set even though only one leg is real, leaving an
+// unhedged ("orphaned") position that breaks the spread's risk profile.
+//
+// This periodically re-checks recently-executed open spread trades against the
+// real exchange/on-chain balance for each leg. If one leg is empty while the
+// other holds a real position, it queues the real leg to be sold via the
+// existing hedge-retry mechanism (closeOpenLeg / _pendingHedges / runHedgeWatchdog).
+
+const SPREAD_VERIFY_DELAY_MS = 15_000        // give fills time to settle before checking
+const SPREAD_VERIFY_FILL_THRESHOLD = 0.3     // a leg counts as "filled" at >=30% of expected shares
+
+async function verifySpreadTradeLegs(record: TradeRecord, polyPositions: Map<string, number> | null, now: number): Promise<void> {
+  // Once the market is close to expiry, stop checking — leave the trade alone and
+  // let auto-redeem handle the winning side rather than placing a risky last-second sell.
+  if (record.expiresAt > 0 && now > record.expiresAt - 30_000) {
+    record.legsVerified = true
+    return
+  }
+
+  const totalCost = (record.spreadYesAsk ?? 0) + (record.spreadNoAsk ?? 0)
+  const estimatedShares = totalCost > 0 ? record.positionSize / totalCost : 0
+  const yesExpected = record.spreadYesShares ?? estimatedShares
+  const noExpected  = record.spreadNoShares  ?? estimatedShares
+  if (yesExpected <= 0.01 && noExpected <= 0.01) {
+    record.legsVerified = true  // no reliable expectation to compare against
+    return
+  }
+
+  const yesTokenId = record.spreadYesPlatform === 'poly' ? record.polyTokenId : ''
+  const noTokenId  = record.spreadNoPlatform  === 'poly' ? (record.spreadNoTokenId ?? record.polyTokenId) : ''
+
+  const getActual = async (platform: 'poly' | 'lim' | undefined, tokenId: string, limOutcome: 'yes' | 'no'): Promise<number | null> => {
+    if (platform === 'poly') return polyPositions?.get(tokenId) ?? 0
+    if (platform === 'lim') return getLimPositionShares(record.limSlug, limOutcome)
+    return null
+  }
+
+  const [yesActual, noActual] = await Promise.all([
+    getActual(record.spreadYesPlatform, yesTokenId, 'yes'),
+    getActual(record.spreadNoPlatform, noTokenId, 'no'),
+  ])
+
+  // Couldn't determine one of the legs (RPC error, etc.) — try again next tick
+  if (yesActual == null || noActual == null) return
+
+  const yesFilled = yesExpected <= 0.01 || yesActual >= yesExpected * SPREAD_VERIFY_FILL_THRESHOLD
+  const noFilled  = noExpected  <= 0.01 || noActual  >= noExpected  * SPREAD_VERIFY_FILL_THRESHOLD
+
+  if (yesFilled && noFilled) {
+    record.legsVerified = true
+    return
+  }
+  if (!yesFilled && !noFilled) {
+    log('warn', 'ArbEngine', `spread ${record.id} (${record.asset}): neither leg shows a real position (expected YES≈${yesExpected.toFixed(3)}, NO≈${noExpected.toFixed(3)}) — leaving as-is`)
+    record.legsVerified = true
+    return
+  }
+
+  // Exactly one leg is missing — the other holds a real, unhedged position. Close it.
+  const orphanLeg    = !yesFilled ? 'NO' : 'YES'
+  const realPlatform = !yesFilled ? record.spreadNoPlatform : record.spreadYesPlatform
+  const realShares   = !yesFilled ? noActual : yesActual
+  const realOutcome: 'yes' | 'no' = !yesFilled ? 'no' : 'yes'
+  const realTokenId  = !yesFilled ? noTokenId : yesTokenId
+
+  record.legsVerified = true
+
+  if (realShares <= 0.01 || !realPlatform) {
+    record.hedgeStatus = 'expired'
+    record.hedgeError = `${orphanLeg} leg never filled, and the other leg holds no position either`
+    log('warn', 'ArbEngine', `spread ${record.id} (${record.asset}): ${orphanLeg} leg never filled, but the other leg also holds no position — nothing to hedge`)
+    return
+  }
+
+  log('warn', 'ArbEngine', `spread ${record.id} (${record.asset}): ORPHAN detected — ${orphanLeg} leg never filled, closing real ${realPlatform.toUpperCase()} ${realOutcome.toUpperCase()} position (${realShares.toFixed(4)} shares)`)
+  record.hedgeStatus = 'pending'
+  record.hedgeError = `${orphanLeg} leg has no position — closing orphaned ${realPlatform} leg`
+
+  const hedge: PendingHedge = {
+    tradeId: record.id,
+    openLeg: realPlatform,
+    asset: record.asset,
+    polyTokenId: realTokenId,
+    limSlug: record.limSlug,
+    limOutcome: realOutcome,
+    polyEntryPrice: record.spreadYesAsk ?? 0,
+    limEntryPrice: record.spreadNoAsk ?? 0,
+    positionSize: record.positionSize,
+    expiresAt: record.expiresAt,
+    retries: 0,
+    firstAttemptTs: now,
+    directShares: realShares,
+  }
+
+  const closed = await closeOpenLeg(hedge)
+  if (closed) {
+    updateTradeHedgeStatus(record.id, 'closed')
+    log('info', 'ArbEngine', `spread ${record.id}: orphaned ${realPlatform} leg closed`)
+  } else {
+    _pendingHedges.push(hedge)
+    log('warn', 'ArbEngine', `spread ${record.id}: orphan hedge queued for watchdog retry`)
+  }
+}
+
+async function verifySpreadLegs(): Promise<void> {
+  const now = Date.now()
+  const candidates = _tradeLog.filter(t =>
+    t.type === 'spread' && t.success && !t.earlyExited && !t.legsVerified &&
+    now - t.ts >= SPREAD_VERIFY_DELAY_MS
+  )
+  if (candidates.length === 0) return
+
+  let polyPositions: Map<string, number> | null = null
+  if (candidates.some(t => t.spreadYesPlatform === 'poly' || t.spreadNoPlatform === 'poly')) {
+    polyPositions = new Map()
+    for (const p of await getPolyPositions()) {
+      const raw = p as Record<string, unknown>
+      const tokenId = String(raw['tokenId'] ?? raw['asset_id'] ?? raw['asset'] ?? '')
+      if (tokenId) polyPositions.set(tokenId, parseFloat(String(raw['size'] ?? '0')))
+    }
+  }
+
+  for (const record of candidates) {
+    try {
+      await verifySpreadTradeLegs(record, polyPositions, now)
+    } catch (err) {
+      log('warn', 'ArbEngine', `verifySpreadLegs ${record.id}: ${(err as Error).message}`)
+    }
+  }
+  saveTradeLog().catch(() => {})
+  broadcastState()
 }
 
 // ── Execution ──────────────────────────────────────────────────────────────────
@@ -2125,6 +2279,7 @@ let _retryRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let _redeemTimer: ReturnType<typeof setInterval> | null = null
 let _hedgeTimer: ReturnType<typeof setInterval> | null = null
 let _earlyExitTimer: ReturnType<typeof setInterval> | null = null
+let _legCheckTimer: ReturnType<typeof setInterval> | null = null
 const _pendingHedges: PendingHedge[] = []
 
 async function refreshMarkets(): Promise<void> {
@@ -2317,6 +2472,8 @@ async function startCryptoPipeline(): Promise<void> {
   if (!_hedgeTimer) _hedgeTimer = setInterval(() => runHedgeWatchdog().catch(err => log('warn', 'ArbEngine', `hedge watchdog error: ${(err as Error).message}`)), 5_000)
   // Check open arb positions for early-exit opportunity every 3 seconds
   if (!_earlyExitTimer) _earlyExitTimer = setInterval(() => checkAllEarlyExits(), 3_000)
+  // Watchdog: verify both legs of recent spread trades actually filled, every 20 seconds
+  if (!_legCheckTimer) _legCheckTimer = setInterval(() => verifySpreadLegs().catch(err => log('warn', 'ArbEngine', `spread leg watchdog error: ${(err as Error).message}`)), 20_000)
   log('info', 'ArbEngine', `crypto pipeline started — ${getPolyMarkets().size} poly + ${getLimMarkets().size} lim markets`)
 }
 
@@ -2329,6 +2486,7 @@ async function stopCryptoPipeline(): Promise<void> {
   if (_polyRedeemTimer)   { clearInterval(_polyRedeemTimer);   _polyRedeemTimer   = null }
   if (_hedgeTimer)        { clearInterval(_hedgeTimer);        _hedgeTimer        = null }
   if (_earlyExitTimer)    { clearInterval(_earlyExitTimer);    _earlyExitTimer    = null }
+  if (_legCheckTimer)     { clearInterval(_legCheckTimer);     _legCheckTimer     = null }
   _pendingHedges.length = 0
   _buzzerState.clear()
   await Promise.allSettled([stopPolyWs(), stopLimWs()])
