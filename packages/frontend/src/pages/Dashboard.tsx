@@ -53,7 +53,7 @@ interface ArbState {
   apiCalls?: Record<'poly' | 'lim', { total: number; perMin: number }>
   sports?: SportsSnapshot
   copyTrade?: CopyTradeSnapshot
-  engine: { running: boolean; autoExecute: boolean; minProfitPct: number; mode: 'arb' | 'signal' | 'both' | 'none'; signalMinGapPct: number; xtfEnabled?: boolean; xtfMinGapPct?: number; xAssetEnabled?: boolean; xAssetMinGapPct?: number; autoExit?: boolean; buzzerEnabled?: boolean; buzzerAutoExecute?: boolean; buzzerPositionSize?: number; sportEnabled?: boolean; cryptoEnabled?: boolean; copyTradeEnabled?: boolean; copyTradeAutoExecute?: boolean; copyTradePositionSize?: number; followedWallets?: string[]; spreadEnabled?: boolean; spreadAutoExecute?: boolean; spreadPositionSize?: number; spreadMinGapPct?: number; spreadPlatform?: 'poly' | 'lim' | 'best' }
+  engine: { running: boolean; autoExecute: boolean; minProfitPct: number; mode: 'arb' | 'signal' | 'both' | 'none'; signalMinGapPct: number; xtfEnabled?: boolean; xtfMinGapPct?: number; xAssetEnabled?: boolean; xAssetMinGapPct?: number; autoExit?: boolean; buzzerEnabled?: boolean; buzzerAutoExecute?: boolean; buzzerPositionSize?: number; sportEnabled?: boolean; cryptoEnabled?: boolean; copyTradeEnabled?: boolean; copyTradeAutoExecute?: boolean; copyTradePositionSize?: number; followedWallets?: string[]; spreadEnabled?: boolean; spreadAutoExecute?: boolean; spreadPositionSize?: number; spreadMinGapPct?: number; spreadPlatform?: 'poly' | 'lim' | 'best'; spreadTimeframes?: ('5min' | '15min' | '1h')[] }
   ts: number
 }
 
@@ -246,6 +246,64 @@ function tfLabel(tf: string): string {
   return tf
 }
 
+// Drag-to-resize a panel size (px), persisted in localStorage. `invert` flips the
+// drag direction — used when the panel being sized sits on the trailing side of
+// the divider (dragging toward it should shrink it, not grow it).
+function useResizable(storageKey: string, defaultSize: number, min: number, max: number) {
+  const [size, setSize] = useState<number>(() => {
+    const stored = Number(window.localStorage.getItem(storageKey))
+    return stored > 0 ? Math.min(max, Math.max(min, stored)) : defaultSize
+  })
+  const sizeRef = useRef(size)
+  sizeRef.current = size
+
+  const onDragStart = useCallback((axis: 'x' | 'y', invert = false) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startPos = axis === 'x' ? e.clientX : e.clientY
+    const startSize = sizeRef.current
+    document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize'
+    document.body.style.userSelect = 'none'
+    const onMove = (ev: MouseEvent) => {
+      const pos = axis === 'x' ? ev.clientX : ev.clientY
+      const delta = (pos - startPos) * (invert ? -1 : 1)
+      setSize(Math.min(max, Math.max(min, startSize + delta)))
+    }
+    const onUp = () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      window.localStorage.setItem(storageKey, String(sizeRef.current))
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [storageKey, min, max])
+
+  return [size, onDragStart] as const
+}
+
+function HResizeHandle({ onMouseDown, title }: { onMouseDown: (e: React.MouseEvent) => void; title?: string }) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      title={title ?? 'Drag to resize'}
+      className="shrink-0 resize-handle"
+      style={{ height: 5, cursor: 'row-resize', background: 'var(--bd)' }}
+    />
+  )
+}
+
+function VResizeHandle({ onMouseDown, title }: { onMouseDown: (e: React.MouseEvent) => void; title?: string }) {
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      title={title ?? 'Drag to resize'}
+      className="shrink-0 resize-handle"
+      style={{ width: 5, cursor: 'col-resize', background: 'var(--bd)' }}
+    />
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -256,6 +314,11 @@ export default function Dashboard() {
   const [openPositions, setOpenPositions] = useState<OpenPosition[]>([])
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([])
   const [leftTab, setLeftTab] = useState<'positions' | 'history'>('positions')
+
+  // Resizable panel sizes (px), persisted across reloads
+  const [bottomSplitHeight, resizeBottomSplit] = useResizable('dash:bottomSplitHeight', 280, 120, 900)
+  const [logPanelWidth, resizeLogPanel] = useResizable('dash:logPanelWidth', 360, 200, 900)
+  const [sidebarWidth, resizeSidebar] = useResizable('dash:copyTradeSidebarWidth', 368, 240, 700)
   const [balances, setBalances] = useState<DashboardData['balances'] | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [autoExecute, setAutoExecute] = useState(false)
@@ -304,6 +367,7 @@ export default function Dashboard() {
   const [spreadPositionSize, setSpreadPositionSize] = useState(5.0)
   const [spreadMinGapPct, setSpreadMinGapPct] = useState(2.0)
   const [spreadPlatform, setSpreadPlatform] = useState<'poly' | 'lim' | 'best'>('best')
+  const [spreadTimeframes, setSpreadTimeframes] = useState<('5min' | '15min' | '1h')[]>(['5min', '15min', '1h'])
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [now, setNow] = useState(Date.now())
   const logRef = useRef<HTMLDivElement>(null)
@@ -339,6 +403,7 @@ export default function Dashboard() {
       setSpreadPositionSize((d.engine as { spreadPositionSize?: number })?.spreadPositionSize ?? 5.0)
       setSpreadMinGapPct((d.engine as { spreadMinGapPct?: number })?.spreadMinGapPct ?? 2.0)
       setSpreadPlatform((d.engine as { spreadPlatform?: 'poly' | 'lim' | 'best' })?.spreadPlatform ?? 'best')
+      setSpreadTimeframes((d.engine as { spreadTimeframes?: ('5min' | '15min' | '1h')[] })?.spreadTimeframes ?? ['5min', '15min', '1h'])
       if (d.engine?.apiCalls) setApiCalls(d.engine.apiCalls)
     }).catch(() => {})
 
@@ -405,6 +470,7 @@ export default function Dashboard() {
       if (state.engine.spreadPositionSize != null) setSpreadPositionSize(state.engine.spreadPositionSize)
       if (state.engine.spreadMinGapPct != null) setSpreadMinGapPct(state.engine.spreadMinGapPct)
       if (state.engine.spreadPlatform != null) setSpreadPlatform(state.engine.spreadPlatform)
+      if (state.engine.spreadTimeframes != null) setSpreadTimeframes(state.engine.spreadTimeframes)
     }
   }, [settingsOpen]))
 
@@ -430,7 +496,7 @@ export default function Dashboard() {
   const toggleAuto = async () => {
     const next = !autoExecute
     setAutoExecute(next)
-    await api.put('/arb/settings', { autoExecute: next, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform }).catch(() => {})
+    await api.put('/arb/settings', { autoExecute: next, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform, spreadTimeframes }).catch(() => {})
   }
 
   // Buzzer Beater has its own standalone auto-execute switch, decoupled from the master AUTO button above
@@ -443,7 +509,18 @@ export default function Dashboard() {
   const toggleSpread = async () => {
     const next = !spreadEnabled
     setSpreadEnabled(next)
-    await api.put('/arb/settings', { autoExecute, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled: next, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform }).catch(() => {})
+    await api.put('/arb/settings', { autoExecute, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled: next, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform, spreadTimeframes }).catch(() => {})
+  }
+
+  // Toggles a single timeframe (5min/15min/1h) for the Spread strategy. Always leaves
+  // at least one timeframe enabled — toggling the last active one is a no-op.
+  const toggleSpreadTimeframe = async (tf: '5min' | '15min' | '1h') => {
+    if (spreadTimeframes.includes(tf) && spreadTimeframes.length === 1) return
+    const next = spreadTimeframes.includes(tf)
+      ? spreadTimeframes.filter(t => t !== tf)
+      : [...spreadTimeframes, tf]
+    setSpreadTimeframes(next)
+    await api.put('/arb/settings', { autoExecute, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform, spreadTimeframes: next }).catch(() => {})
   }
 
   // Crypto / Sport-Esport / Copy-Trading are three mutually-exclusive "primary strategy"
@@ -590,7 +667,7 @@ export default function Dashboard() {
   }
 
   const saveSettings = async () => {
-    await api.put('/arb/settings', { autoExecute, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform }).catch(() => {})
+    await api.put('/arb/settings', { autoExecute, minProfitPct: minProfit, maxPositionSize: maxSize, maxOpenTrades, mode, signalMinGapPct: signalGap, xtfEnabled, xtfMinGapPct, xAssetEnabled, xAssetMinGapPct, autoExit, buzzerEnabled, buzzerAutoExecute, buzzerPositionSize, sportEnabled, cryptoEnabled, spreadEnabled, spreadAutoExecute, spreadPositionSize, spreadMinGapPct, spreadPlatform, spreadTimeframes }).catch(() => {})
     setSettingsOpen(false)
   }
 
@@ -633,9 +710,15 @@ export default function Dashboard() {
   }
 
   // Determine which keys to display: use WS state keys if available, else ALL_KEYS
-  const displayKeys = arbState
+  let displayKeys = arbState
     ? [...new Set([...ALL_KEYS, ...Object.keys(arbState.assets ?? {})])]
     : ALL_KEYS
+
+  // When ARB and SIGNAL are both off, the table is only useful for monitoring
+  // Spread — narrow it to the expiries Spread is actually configured to trade.
+  if (spreadEnabled && !showArb && !showSignal) {
+    displayKeys = displayKeys.filter(k => spreadTimeframes.includes(k.split('-').slice(1).join('-') as '5min' | '15min' | '1h'))
+  }
 
   // ── Table sort ───────────────────────────────────────────────────────────────
   const [tableSort, setTableSort] = useState<{ col: string; dir: 'asc' | 'desc' }>({ col: 'arb', dir: 'desc' })
@@ -759,6 +842,11 @@ export default function Dashboard() {
           <Link to="/settings" className="text-[10px] px-3 py-1.5 rounded font-bold tracking-wider" style={{background:'rgba(15,28,56,0.8)',border:'1px solid var(--bd2)',color:'var(--dim)'}}>
             ↗ CREDS
           </Link>
+          <button onClick={() => { api.post('/auth/logout').finally(() => { window.location.href = '/login' }) }}
+            className="text-[10px] px-3 py-1.5 rounded font-bold tracking-wider transition-all btn-nr"
+            title="Log out">
+            ⏻ LOGOUT
+          </button>
         </div>
       </header>
 
@@ -802,6 +890,22 @@ export default function Dashboard() {
                   <option value="poly">Polymarket only</option>
                   <option value="lim">Limitless only</option>
                 </select>
+              </label>
+              <label className="flex items-center gap-1.5 text-[10px]" style={{color:'var(--dim)'}}>
+                Expiry
+                <span className="flex items-center gap-1">
+                  {TIMEFRAMES.map(tf => {
+                    const active = spreadTimeframes.includes(tf)
+                    return (
+                      <button key={tf} type="button" onClick={()=>toggleSpreadTimeframe(tf)}
+                        title={`${active ? 'Disable' : 'Enable'} ${tf} spread markets`}
+                        className="text-[10px] px-2 py-0.5 rounded font-bold tracking-wider transition-all"
+                        style={active ? {background:'var(--ny)18',border:'1px solid var(--ny)55',color:'var(--ny)',textShadow:'0 0 6px var(--ny)88'} : {background:'rgba(15,28,56,0.8)',border:'1px solid var(--bd2)',color:'var(--dim)'}}>
+                        {tf}
+                      </button>
+                    )
+                  })}
+                </span>
               </label>
             </>)}
             <div style={{width:'1px',height:'18px',background:'var(--bd2)'}} />
@@ -919,7 +1023,7 @@ export default function Dashboard() {
 
         {/* Crypto sections — hidden while Sport/Esport or Copy Trading active */}
         {!sportEnabled && !copyTradeEnabled && (
-        <>
+        <div className="flex-1 flex flex-col overflow-y-auto min-h-0">
         {/* Arb table */}
         <div className="overflow-x-auto shrink-0">
           <table className="w-full arb-table">
@@ -1133,7 +1237,7 @@ export default function Dashboard() {
             ))}
           </div>
         )}
-        </>
+        </div>
         )}
 
         {/* ── Copy Trading: leaderboard widget grid + followed traders + signal feed ── */}
@@ -1141,7 +1245,7 @@ export default function Dashboard() {
           <div className="flex flex-1 overflow-hidden min-h-0">
 
             {/* Leaderboard — card grid, the main widget */}
-            <div className="flex-1 flex flex-col overflow-hidden" style={{borderRight:'1px solid var(--bd)'}}>
+            <div className="flex-1 flex flex-col overflow-hidden" style={{minWidth:0}}>
               {/* Title bar */}
               <div className="ph shrink-0">
                 <div className="flex items-center gap-2">
@@ -1357,8 +1461,10 @@ export default function Dashboard() {
               </div>
             </div>
 
+            <VResizeHandle onMouseDown={resizeSidebar('x', true)} title="Drag to resize sidebar" />
+
             {/* Sidebar: following + signal feed widgets */}
-            <div className="w-[23rem] shrink-0 flex flex-col overflow-hidden">
+            <div className="shrink-0 flex flex-col overflow-hidden" style={{width: sidebarWidth, maxWidth:'55%'}}>
 
               {/* Following widget */}
               <div className="shrink-0 max-h-[45%] flex flex-col overflow-hidden" style={{borderBottom:'1px solid var(--bd)'}}>
@@ -1419,11 +1525,21 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ── Bottom split: positions left, log right ── */}
-        <div className="flex flex-1 overflow-hidden min-h-0" style={{borderTop:'1px solid var(--bd)'}}>
+        {/* ── Horizontal divider: resize the bottom split's height ── */}
+        {(copyTradeEnabled || !sportEnabled) && (
+          <HResizeHandle onMouseDown={resizeBottomSplit('y', true)} title="Drag to resize bottom panel" />
+        )}
 
-          {/* Left panel: Positions / History tabs — 75% width */}
-          <div className="flex flex-col overflow-hidden" style={{flex:'3 1 0%', minWidth:0, borderRight:'1px solid var(--bd)'}}>
+        {/* ── Bottom split: positions left, log right ── */}
+        <div
+          className="flex overflow-hidden min-h-0"
+          style={(copyTradeEnabled || !sportEnabled)
+            ? {height: bottomSplitHeight, maxHeight:'75%', flexShrink:0, borderTop:'1px solid var(--bd)'}
+            : {flex:'1 1 0%', borderTop:'1px solid var(--bd)'}}
+        >
+
+          {/* Left panel: Positions / History tabs */}
+          <div className="flex flex-col overflow-hidden" style={{flex:'1 1 0%', minWidth:0, borderRight:'1px solid var(--bd)'}}>
             {/* Tab header */}
             <div className="flex shrink-0" style={{borderBottom:'1px solid var(--bd)',background:'var(--bg1)'}}>
               <button
@@ -1583,8 +1699,10 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Live log — 25% width */}
-          <div className="flex flex-col overflow-hidden" style={{flex:'1 1 0%', minWidth:0}}>
+          <VResizeHandle onMouseDown={resizeLogPanel('x', true)} title="Drag to resize log panel" />
+
+          {/* Live log */}
+          <div className="flex flex-col overflow-hidden" style={{width: logPanelWidth, maxWidth:'60%', flexShrink:0}}>
             <div className="ph shrink-0">
               <span className="wlabel">Live Log</span>
             </div>

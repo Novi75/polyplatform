@@ -135,7 +135,7 @@ body {
 }
 
 /* ─── Input terminal style ──────────────────────────────────────────── */
-input[type=number], input[type=text] {
+input[type=number], input[type=text], input[type=password] {
   background: var(--bg0);
   border: 1px solid var(--bd2);
   color: var(--nc);
@@ -144,7 +144,7 @@ input[type=number], input[type=text] {
   outline: none;
   caret-color: var(--ng);
 }
-input[type=number]:focus, input[type=text]:focus {
+input[type=number]:focus, input[type=text]:focus, input[type=password]:focus {
   border-color: rgba(0,212,255,0.5);
   box-shadow: 0 0 6px rgba(0,212,255,0.15);
 }
@@ -186,6 +186,10 @@ input[type=checkbox] { accent-color: var(--ng); }
 .trader-card:hover { border-color: rgba(0,212,255,0.3); box-shadow: 0 0 12px rgba(0,212,255,0.06); }
 .trader-card.expanded { border-color: rgba(0,212,255,0.5); box-shadow: 0 0 16px rgba(0,212,255,0.1); }
 .trader-card.followed { border-color: rgba(0,255,136,0.4); box-shadow: 0 0 10px rgba(0,255,136,0.07); }
+
+/* ─── Resize handles ────────────────────────────────────────────────── */
+.resize-handle { transition: background 0.1s; }
+.resize-handle:hover, .resize-handle:active { background: var(--nc) !important; }
 
 /* ─── Signal items ──────────────────────────────────────────────────── */
 .sig-executed { background:rgba(0,255,136,0.05); border:1px solid rgba(0,255,136,0.2); }

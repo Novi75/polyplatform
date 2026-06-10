@@ -2,7 +2,7 @@
  * Polymarket exchange integration — crypto markets for all timeframes (5min, 15min, 1h).
  * Handles: WS subscription, live prices, order placement, balance, positions.
  */
-import { createSecureClient, OrderSide, relayerApiKey } from '@polymarket/client'
+import { createSecureClient, OrderSide, relayerApiKey, InsufficientLiquidityError } from '@polymarket/client'
 import { privateKey as viemPrivateKey } from '@polymarket/client/viem'
 import type { SecureClient } from '@polymarket/client'
 import { createHmac } from 'crypto'
@@ -507,9 +507,41 @@ export function getPolyTokenToKeyMap(): Map<string, { key: string; outcome: 'yes
 
 // ── Order placement ───────────────────────────────────────────────────────────
 
+export interface PolyLiquidityCheck {
+  ok: boolean
+  estimatedPrice: number | null
+  reason?: string
+}
+
+// Pre-flight depth check: confirms the live orderbook can fill a BUY of `amountUSDC`
+// AND that it would fill close to `expectedPrice` (the ask price the spread was sized
+// at) before we commit to a multi-leg trade. Polymarket market orders are FAK (Fill-
+// and-Kill) — if the book can't match at all, the order is killed outright, but even
+// when it CAN match, a thin book beyond the best price can fill at a price far worse
+// than `expectedPrice`. estimateMarketPrice returns the worst price level the order
+// would have to walk to in order to fill `amountUSDC` — if that deviates from
+// `expectedPrice` by more than `tolerance`, the resulting fill would receive far fewer
+// shares than the equal-contract sizing assumed, breaking the hedge. Any non-depth
+// error (rate limit, transport) returns ok=true so a transient API hiccup doesn't
+// block trading — the FAK order itself remains the final safeguard.
+export async function checkPolyLiquidity(tokenId: string, amountUSDC: number, expectedPrice: number, tolerance = 0.05): Promise<PolyLiquidityCheck> {
+  try {
+    const client = await getPolyClient()
+    const estimatedPrice = await client.estimateMarketPrice({ tokenId, side: OrderSide.BUY, amount: amountUSDC })
+    if (Math.abs(estimatedPrice - expectedPrice) > tolerance) {
+      return { ok: false, estimatedPrice, reason: `book too thin: est. fill ${estimatedPrice.toFixed(4)} vs expected ${expectedPrice.toFixed(4)}` }
+    }
+    return { ok: true, estimatedPrice }
+  } catch (err) {
+    if (err instanceof InsufficientLiquidityError) return { ok: false, estimatedPrice: null, reason: 'insufficient orderbook depth' }
+    return { ok: true, estimatedPrice: null }
+  }
+}
+
 export interface PolyOrderResult {
   raw: unknown
-  // Actual tokens received on a BUY (takerAmount from CLOB, in base units ÷ 1e6)
+  // Actual tokens (shares) received on a BUY — takingAmount from the CLOB response,
+  // already in human-readable share units (no further unit conversion needed)
   tokensReceived: number | null
 }
 
@@ -526,9 +558,10 @@ export async function placePolyOrder(tokenId: string, side: 'BUY' | 'SELL', amou
     ? await client.placeMarketOrder({ tokenId, side: OrderSide.BUY, amount })
     : await client.placeMarketOrder({ tokenId, side: OrderSide.SELL, shares: amount })
   const r = raw as Record<string, unknown>
-  // SDK response uses takingAmount (camelCase) for tokens received on a BUY, in base units (÷1e6)
+  // SDK response uses takingAmount (camelCase) for tokens received on a BUY, already
+  // in human-readable share units (matches makingAmount, which is the USDC spent)
   const takerRaw = r['takingAmount'] ?? r['takerAmount'] ?? r['taker_amount'] ?? r['filledAmount'] ?? r['filled_amount']
-  const tokensReceived = side === 'BUY' && takerRaw != null ? parseFloat(String(takerRaw)) / 1e6 : null
+  const tokensReceived = side === 'BUY' && takerRaw != null ? parseFloat(String(takerRaw)) : null
   log('info', 'Poly', `order ${side} token=${tokenId.slice(0, 12)}… size=${amount} → status=${r['status'] ?? r['orderStatus'] ?? '?'} takerAmount=${takerRaw ?? '?'} tokensReceived=${tokensReceived ?? '?'} errorMsg=${r['errorMsg'] ?? r['error_msg'] ?? 'none'}`)
   return { raw, tokensReceived }
 }

@@ -22,6 +22,7 @@ store.json
 # Logs
 *.log
 *.err
+*.out
 
 # Test/scratch files
 test_*.mjs

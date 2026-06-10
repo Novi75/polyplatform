@@ -13,7 +13,7 @@ import {
   TIMEFRAMES, type MarketTimeframe, detectTimeframe,
   fetchPolyMarkets, startPolyWs, stopPolyWs, getPolyMarkets, getPolyAssetPrice,
   getPolyBalance, getPolyPositions, getPolyTokenToKeyMap, placePolyOrder, redeemPolyPositions, type PolyOrderResult,
-  placePolyLimitOrder, cancelPolyOrder, getPolyOrder, type PolyMarketInfo,
+  placePolyLimitOrder, cancelPolyOrder, getPolyOrder, type PolyMarketInfo, checkPolyLiquidity, type PolyLiquidityCheck,
 } from '../exchanges/poly.js'
 import {
   fetchLimMarkets, startLimWs, stopLimWs, getLimMarkets, getLimAssetPrice,
@@ -78,6 +78,7 @@ export interface ArbSettings {
   spreadPositionSize: number      // target USD spend per spread trade (split equally across both legs)
   spreadMinGapPct: number         // minimum guaranteed profit % required to execute (after fees)
   spreadPlatform: 'poly' | 'lim' | 'best'  // 'poly' = both legs on Polymarket; 'lim' = both on Limitless; 'best' = cross-platform (cheapest YES + cheapest NO)
+  spreadTimeframes: MarketTimeframe[]  // which market timeframes the Spread strategy scans/trades (5min, 15min, 1h)
 }
 
 export interface XtfOpportunity {
@@ -231,7 +232,7 @@ interface PendingHedge {
 // ── State ──────────────────────────────────────────────────────────────────────
 
 let _running = false
-let _settings: ArbSettings = { minProfitPct: 1.5, autoExecute: false, maxPositionSize: 10, maxOpenTrades: 3, mode: 'arb', signalMinGapPct: 25, xtfEnabled: false, xtfMinGapPct: 15, xAssetEnabled: false, xAssetMinGapPct: 20, autoExit: false, buzzerEnabled: false, buzzerAutoExecute: false, buzzerPositionSize: 1.0, sportEnabled: false, cryptoEnabled: true, copyTradeEnabled: false, copyTradeAutoExecute: false, copyTradePositionSize: 5.0, followedWallets: [], spreadEnabled: false, spreadAutoExecute: false, spreadPositionSize: 5.0, spreadMinGapPct: 2.0, spreadPlatform: 'best' }
+let _settings: ArbSettings = { minProfitPct: 1.5, autoExecute: false, maxPositionSize: 10, maxOpenTrades: 3, mode: 'arb', signalMinGapPct: 25, xtfEnabled: false, xtfMinGapPct: 15, xAssetEnabled: false, xAssetMinGapPct: 20, autoExit: false, buzzerEnabled: false, buzzerAutoExecute: false, buzzerPositionSize: 1.0, sportEnabled: false, cryptoEnabled: true, copyTradeEnabled: false, copyTradeAutoExecute: false, copyTradePositionSize: 5.0, followedWallets: [], spreadEnabled: false, spreadAutoExecute: false, spreadPositionSize: 5.0, spreadMinGapPct: 2.0, spreadPlatform: 'best', spreadTimeframes: ['5min', '15min', '1h'] }
 let _tradeLog: TradeRecord[] = []
 let _broadcastTimer: ReturnType<typeof setTimeout> | null = null
 let _refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -925,6 +926,7 @@ export function scanSpreadOpportunities(): SpreadOpportunity[] {
   if (!_settings.spreadEnabled) return []
   const opps: SpreadOpportunity[] = []
   for (const key of ALL_MARKET_KEYS) {
+    if (!_settings.spreadTimeframes.includes(tfFromKey(key))) continue
     const opp = detectSpread(key)
     if (opp) opps.push(opp)
   }
@@ -984,6 +986,28 @@ async function executeSpreadTrade(opp: SpreadOpportunity): Promise<void> {
     _pendingTradeCount--
     return
   }
+
+  // Pre-flight depth + price check: confirm the Poly orderbook can fill each Poly leg
+  // AT ROUGHLY THE EXPECTED PRICE before committing to either leg. Polymarket market
+  // orders are FAK — if the book can't match at all, the order is killed outright,
+  // but even when it CAN match, a thin book beyond the best price fills at a much
+  // worse average price, returning far fewer shares than the equal-contract sizing
+  // assumed and breaking the hedge. Checking first avoids placing the Lim leg only to
+  // have the Poly leg fail or fill at a hedge-breaking price.
+  const polyChecks: Promise<{ leg: 'YES' | 'NO'; check: PolyLiquidityCheck }>[] = []
+  if (opp.yesPlatform === 'poly') polyChecks.push(checkPolyLiquidity(opp.yesTokenId, yesUSDC, opp.yesAsk).then(check => ({ leg: 'YES' as const, check })))
+  if (opp.noPlatform  === 'poly') polyChecks.push(checkPolyLiquidity(opp.noTokenId, noUSDC, opp.noAsk).then(check => ({ leg: 'NO' as const, check })))
+  if (polyChecks.length > 0) {
+    const results = await Promise.all(polyChecks)
+    const failed = results.find(r => !r.check.ok)
+    if (failed) {
+      log('info', 'ArbEngine', `spread skip ${opp.key} — Poly ${failed.leg} leg: ${failed.check.reason}`)
+      _executing.delete(execKey)
+      _pendingTradeCount--
+      return
+    }
+  }
+
   const totalSpend = yesUSDC + noUSDC
 
   log('info', 'ArbEngine', `spread ${opp.key}: YES@${opp.yesPlatform}($${yesUSDC.toFixed(2)}@${opp.yesAsk.toFixed(3)}) + NO@${opp.noPlatform}($${noUSDC.toFixed(2)}@${opp.noAsk.toFixed(3)}) spread=${opp.spreadPct.toFixed(2)}% ${opp.secsToExpiry}s left`)
@@ -1004,48 +1028,97 @@ async function executeSpreadTrade(opp: SpreadOpportunity): Promise<void> {
 
   const t0 = Date.now()
   try {
-    // Build YES and NO order promises based on which platforms each leg is on
     let yesResult: unknown, noResult: unknown
     let yesSharesHeld: number | undefined, noSharesHeld: number | undefined
 
-    const yesPromise = opp.yesPlatform === 'poly'
-      ? placePolyOrder(opp.yesTokenId, 'BUY', yesUSDC).then(r => {
+    const crossPlatform = opp.yesPlatform !== opp.noPlatform
+
+    if (crossPlatform) {
+      // Sequential execution: Poly leg first, Lim leg only if Poly succeeds.
+      // Parallel (allSettled) causes one-sided Lim positions when Poly FAK orders
+      // fail — the Lim leg runs and fills regardless, leaving an unhedged position.
+      const polyIsYes = opp.yesPlatform === 'poly'
+      let polyFailed = false
+
+      try {
+        if (polyIsYes) {
+          const r = await placePolyOrder(opp.yesTokenId, 'BUY', yesUSDC)
           yesResult = r.raw
           if (r.tokensReceived != null && r.tokensReceived > 0) yesSharesHeld = r.tokensReceived
-        })
-      : placeLimOrder(opp.yesLimSlug, 'yes', yesUSDC).then(r => { yesResult = r })
-
-    const noPromise = opp.noPlatform === 'poly'
-      ? placePolyOrder(opp.noTokenId, 'BUY', noUSDC).then(r => {
+        } else {
+          const r = await placePolyOrder(opp.noTokenId, 'BUY', noUSDC)
           noResult = r.raw
           if (r.tokensReceived != null && r.tokensReceived > 0) noSharesHeld = r.tokensReceived
-        })
-      : placeLimOrder(opp.noLimSlug, 'no', noUSDC).then(r => { noResult = r })
+        }
+      } catch (polyErr) {
+        polyFailed = true
+        const msg = (polyErr as Error).message
+        record.error = msg
+        if (polyIsYes) yesResult = msg; else noResult = msg
+        log('warn', 'ArbEngine', `spread abort ${opp.key} — poly FAK failed, lim leg NOT placed: ${msg} [${Date.now() - t0}ms]`)
+      }
 
-    const [yesSettled, noSettled] = await Promise.allSettled([yesPromise, noPromise])
+      if (!polyFailed) {
+        try {
+          if (polyIsYes) {
+            noResult = await placeLimOrder(opp.noLimSlug, 'no', noUSDC)
+          } else {
+            yesResult = await placeLimOrder(opp.yesLimSlug, 'yes', yesUSDC)
+          }
+          record.success = true
+          log('info', 'ArbEngine', `spread success — ${opp.key} +${opp.spreadPct.toFixed(2)}% [${Date.now() - t0}ms]`)
+        } catch (limErr) {
+          const msg = (limErr as Error).message
+          record.error = `poly ok, lim failed: ${msg} — ONE-SIDED POLY POSITION`
+          if (polyIsYes) noResult = msg; else yesResult = msg
+          log('warn', 'ArbEngine', `spread ONE-SIDED ${opp.key} — poly filled but lim FAILED: ${msg} [${Date.now() - t0}ms]`)
+        }
+      }
 
-    const yesOk = yesSettled.status === 'fulfilled'
-    const noOk  = noSettled.status  === 'fulfilled'
-
-    if (!yesOk) yesResult = (yesSettled as PromiseRejectedResult).reason?.message ?? 'failed'
-    if (!noOk)  noResult  = (noSettled  as PromiseRejectedResult).reason?.message ?? 'failed'
-
-    if (opp.yesPlatform === 'poly') record.polyResult = yesResult
-    else record.limResult = yesResult
-    if (noOk && opp.noPlatform === 'poly') record.polyResult = noResult  // NO poly result overwrites if both poly
-    else if (!yesOk && opp.noPlatform === 'lim') record.limResult = noResult
-
-    record.spreadYesShares = yesSharesHeld
-    record.spreadNoShares  = noSharesHeld
-
-    if (yesOk && noOk) {
-      record.success = true
-      log('info', 'ArbEngine', `spread success — ${opp.key} +${opp.spreadPct.toFixed(2)}% [${Date.now() - t0}ms]`)
+      record.polyResult = polyIsYes ? yesResult : noResult
+      record.limResult  = polyIsYes ? noResult  : yesResult
+      record.spreadYesShares = yesSharesHeld
+      record.spreadNoShares  = noSharesHeld
     } else {
-      const yesErr = !yesOk ? String((yesSettled as PromiseRejectedResult).reason?.message ?? 'yes failed') : null
-      const noErr  = !noOk  ? String((noSettled  as PromiseRejectedResult).reason?.message ?? 'no failed')  : null
-      record.error = [yesErr, noErr].filter(Boolean).join(' / ')
-      log('warn', 'ArbEngine', `spread partial/failed — ${record.error} [${Date.now() - t0}ms]`)
+      // Same-platform: parallel is safe — a failure on one doesn't orphan a position on the other
+      const yesPromise = opp.yesPlatform === 'poly'
+        ? placePolyOrder(opp.yesTokenId, 'BUY', yesUSDC).then(r => {
+            yesResult = r.raw
+            if (r.tokensReceived != null && r.tokensReceived > 0) yesSharesHeld = r.tokensReceived
+          })
+        : placeLimOrder(opp.yesLimSlug, 'yes', yesUSDC).then(r => { yesResult = r })
+
+      const noPromise = opp.noPlatform === 'poly'
+        ? placePolyOrder(opp.noTokenId, 'BUY', noUSDC).then(r => {
+            noResult = r.raw
+            if (r.tokensReceived != null && r.tokensReceived > 0) noSharesHeld = r.tokensReceived
+          })
+        : placeLimOrder(opp.noLimSlug, 'no', noUSDC).then(r => { noResult = r })
+
+      const [yesSettled, noSettled] = await Promise.allSettled([yesPromise, noPromise])
+      const yesOk = yesSettled.status === 'fulfilled'
+      const noOk  = noSettled.status  === 'fulfilled'
+
+      if (!yesOk) yesResult = (yesSettled as PromiseRejectedResult).reason?.message ?? 'failed'
+      if (!noOk)  noResult  = (noSettled  as PromiseRejectedResult).reason?.message ?? 'failed'
+
+      if (opp.yesPlatform === 'poly') record.polyResult = yesResult
+      else record.limResult = yesResult
+      if (noOk && opp.noPlatform === 'poly') record.polyResult = noResult
+      else if (!yesOk && opp.noPlatform === 'lim') record.limResult = noResult
+
+      record.spreadYesShares = yesSharesHeld
+      record.spreadNoShares  = noSharesHeld
+
+      if (yesOk && noOk) {
+        record.success = true
+        log('info', 'ArbEngine', `spread success — ${opp.key} +${opp.spreadPct.toFixed(2)}% [${Date.now() - t0}ms]`)
+      } else {
+        const yesErr = !yesOk ? String((yesSettled as PromiseRejectedResult).reason?.message ?? 'yes failed') : null
+        const noErr  = !noOk  ? String((noSettled  as PromiseRejectedResult).reason?.message ?? 'no failed')  : null
+        record.error = [yesErr, noErr].filter(Boolean).join(' / ')
+        log('warn', 'ArbEngine', `spread partial/failed — ${record.error} [${Date.now() - t0}ms]`)
+      }
     }
   } catch (err) {
     record.error = (err as Error).message
@@ -1995,7 +2068,7 @@ function broadcastState(): void {
       apiCalls: getApiCallStats(),
       sports: getSportsSnapshot(),
       copyTrade: getCopyTradeSnapshot(),
-      engine: { running: _running, autoExecute: _settings.autoExecute, minProfitPct: _settings.minProfitPct, mode: _settings.mode, signalMinGapPct: _settings.signalMinGapPct, xtfEnabled: _settings.xtfEnabled, xtfMinGapPct: _settings.xtfMinGapPct, xAssetEnabled: _settings.xAssetEnabled, xAssetMinGapPct: _settings.xAssetMinGapPct, autoExit: _settings.autoExit, buzzerEnabled: _settings.buzzerEnabled, buzzerAutoExecute: _settings.buzzerAutoExecute, buzzerPositionSize: _settings.buzzerPositionSize, sportEnabled: _settings.sportEnabled, cryptoEnabled: _settings.cryptoEnabled, copyTradeEnabled: _settings.copyTradeEnabled, copyTradeAutoExecute: _settings.copyTradeAutoExecute, copyTradePositionSize: _settings.copyTradePositionSize, followedWallets: _settings.followedWallets, spreadEnabled: _settings.spreadEnabled, spreadAutoExecute: _settings.spreadAutoExecute, spreadPositionSize: _settings.spreadPositionSize, spreadMinGapPct: _settings.spreadMinGapPct, spreadPlatform: _settings.spreadPlatform },
+      engine: { running: _running, autoExecute: _settings.autoExecute, minProfitPct: _settings.minProfitPct, mode: _settings.mode, signalMinGapPct: _settings.signalMinGapPct, xtfEnabled: _settings.xtfEnabled, xtfMinGapPct: _settings.xtfMinGapPct, xAssetEnabled: _settings.xAssetEnabled, xAssetMinGapPct: _settings.xAssetMinGapPct, autoExit: _settings.autoExit, buzzerEnabled: _settings.buzzerEnabled, buzzerAutoExecute: _settings.buzzerAutoExecute, buzzerPositionSize: _settings.buzzerPositionSize, sportEnabled: _settings.sportEnabled, cryptoEnabled: _settings.cryptoEnabled, copyTradeEnabled: _settings.copyTradeEnabled, copyTradeAutoExecute: _settings.copyTradeAutoExecute, copyTradePositionSize: _settings.copyTradePositionSize, followedWallets: _settings.followedWallets, spreadEnabled: _settings.spreadEnabled, spreadAutoExecute: _settings.spreadAutoExecute, spreadPositionSize: _settings.spreadPositionSize, spreadMinGapPct: _settings.spreadMinGapPct, spreadPlatform: _settings.spreadPlatform, spreadTimeframes: _settings.spreadTimeframes },
       ts: Date.now(),
     })
   }, 200)
@@ -2012,7 +2085,7 @@ function onPriceUpdate(key: string): void {
   if (_settings.buzzerEnabled && _settings.buzzerAutoExecute) {
     runBuzzerCheck(key).catch(err => log('warn', 'ArbEngine', `buzzer ${key} error: ${(err as Error).message}`))
   }
-  if (_settings.spreadEnabled && _settings.spreadAutoExecute) {
+  if (_settings.spreadEnabled && _settings.spreadAutoExecute && _settings.spreadTimeframes.includes(tfFromKey(key))) {
     const spreadOpp = detectSpread(key)
     if (spreadOpp && spreadOpp.spreadPct >= _settings.spreadMinGapPct) {
       executeSpreadTrade(spreadOpp).catch(err => log('warn', 'ArbEngine', `Spread execute error: ${(err as Error).message}`))
@@ -2335,6 +2408,7 @@ export function getEngineStatus(): {
   spreadPositionSize: number
   spreadMinGapPct: number
   spreadPlatform: 'poly' | 'lim' | 'best'
+  spreadTimeframes: MarketTimeframe[]
   openTrades: number
   polyMarkets: number
   limMarkets: number
@@ -2372,6 +2446,7 @@ export function getEngineStatus(): {
     spreadPositionSize: _settings.spreadPositionSize,
     spreadMinGapPct: _settings.spreadMinGapPct,
     spreadPlatform: _settings.spreadPlatform,
+    spreadTimeframes: _settings.spreadTimeframes,
     openTrades,
     polyMarkets: getPolyMarkets().size,
     limMarkets: getLimMarkets().size,

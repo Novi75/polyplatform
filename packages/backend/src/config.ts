@@ -16,6 +16,13 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   isDev: (process.env.NODE_ENV ?? 'development') === 'development',
 
+  auth: {
+    password: process.env.AUTH_PASSWORD ?? '',
+    sessionSecret: process.env.AUTH_SECRET
+      ?? process.env.MASTER_SECRET
+      ?? 'dev_secret_change_in_production',
+  },
+
   polymarket: {
     clobHost: 'https://clob.polymarket.com',
     gammaHost: 'https://gamma-api.polymarket.com',
